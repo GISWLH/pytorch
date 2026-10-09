@@ -1397,6 +1397,7 @@ CUDA_IDENTIFIER_MAP = collections.OrderedDict([
     ("cudaStreamCaptureModeThreadLocal", "hipStreamCaptureModeThreadLocal"),
     ("cudaStreamBeginCapture", "hipStreamBeginCapture"),
     ("cudaStreamEndCapture", "hipStreamEndCapture"),
+    ("cudaStreamAddCaptureDependencies", "hipStreamAddCaptureDependencies"),
     ("cudaStreamSetCaptureDependencies", "hipStreamSetCaptureDependencies"),
     ("cudaStreamUpdateCaptureDependencies", "hipStreamUpdateCaptureDependencies"),
     ("cudaGraphNode_t", "hipGraphNode_t"),

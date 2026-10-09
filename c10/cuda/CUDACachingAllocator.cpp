@@ -228,6 +228,7 @@ struct ExpandableSegment;
 struct Block {
   c10::DeviceIndex device; // gpu
   cudaStream_t stream; // allocation stream
+  CaptureId_t capture_id{0}; // capture in which this allocation was made
   stream_set stream_uses; // streams on which the block was used
   int32_t registration_counter{-1};
   size_t size; // block size in bytes
@@ -2266,6 +2267,9 @@ class DeviceCachingAllocator {
 
     block->allocated = true;
     block->requested_size = orig_size;
+    block->capture_id = capture_tracker_.hasActiveCaptures()
+        ? CUDAGraphMemory::getCaptureInfo(stream, false).capture_id
+        : 0;
 
     block->context_when_allocated = std::move(context);
     record_trace(
@@ -2307,39 +2311,10 @@ class DeviceCachingAllocator {
     return block;
   }
 
-  struct CaptureInfo {
-    cudaGraph_t graph{};
-    CaptureId_t capture_id{0};
-    const cudaGraphNode_t* terminals{nullptr};
-    size_t num_terminals{0};
-    cudaStreamCaptureStatus status{cudaStreamCaptureStatusNone};
-  };
+  using CaptureInfo = CUDAGraphMemory::CaptureInfo;
 
   CaptureInfo stream_get_capture_info(cudaStream_t stream) const {
-    CaptureInfo info{};
-#if (defined(CUDA_VERSION) && CUDA_VERSION >= 13000)
-    C10_CUDA_CHECK(cudaStreamGetCaptureInfo(
-        stream,
-        &info.status,
-        &info.capture_id,
-        &info.graph,
-        &info.terminals,
-        nullptr,
-        &info.num_terminals));
-#else
-    C10_CUDA_CHECK(cudaStreamGetCaptureInfo_v2(
-        stream,
-        &info.status,
-        &info.capture_id,
-        &info.graph,
-        &info.terminals,
-        &info.num_terminals));
-#endif
-    TORCH_INTERNAL_ASSERT(
-        info.status != cudaStreamCaptureStatusInvalidated,
-        "Invalid stream capture status");
-
-    return info;
+    return CUDAGraphMemory::getCaptureInfo(stream);
   }
 
   // Record "free marker" of the CUDA graph for all streams that
@@ -5498,8 +5473,26 @@ class NativeCachingAllocator : public CUDAAllocator {
     return "native";
   }
   void copy_data(void* dest, const void* src, std::size_t count) const final {
-    C10_CUDA_CHECK(
-        cudaMemcpy(dest, src, count, cudaMemcpyKind::cudaMemcpyDeviceToDevice));
+    C10_CUDA_CHECK(cudaMemcpyAsync(
+        dest,
+        src,
+        count,
+        cudaMemcpyDeviceToDevice,
+        cuda::getCurrentCUDAStream()));
+  }
+
+  std::optional<AllocationStreamInfo> allocation_stream_info(
+      const void* ptr) const override {
+    auto* block = ptr
+        ? const_cast<NativeCachingAllocator*>(this)->get_allocated_block(ptr)
+        : nullptr;
+    if (!block) {
+      return std::nullopt;
+    }
+    return AllocationStreamInfo{
+        cuda::getStreamFromExternal(block->stream, block->device),
+        block->capture_id,
+        block->pool->owner_PrivatePool != nullptr};
   }
 };
 

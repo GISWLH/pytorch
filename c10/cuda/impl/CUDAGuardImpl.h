@@ -10,6 +10,7 @@
 #include <c10/cuda/CUDAException.h>
 #include <c10/cuda/CUDAFunctions.h>
 #include <c10/cuda/CUDAStream.h>
+#include <c10/cuda/impl/CUDAGraphMemory.h>
 
 #include <c10/core/Device.h>
 #include <c10/core/DeviceType.h>
@@ -236,6 +237,15 @@ struct CUDAGuardImpl final : public c10::impl::DeviceGuardImplInterface {
   bool isStreamCapturing(const Stream& stream) const override {
     CUDAStream cuda_stream{stream};
     return cuda_stream.is_capturing();
+  }
+
+  uint64_t getStreamCaptureId(const Stream& stream) const override {
+    return CUDAGraphMemory::getCaptureInfo(CUDAStream(stream), false)
+        .capture_id;
+  }
+
+  void waitStream(const Stream& waiter, const Stream& source) const override {
+    CUDAGraphMemory::waitStream(CUDAStream(waiter), CUDAStream(source));
   }
 
   void synchronizeEvent(void* event) const override {

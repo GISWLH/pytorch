@@ -37,7 +37,11 @@ from torch._prims_common import (
     suggest_memory_format,
     type_to_dtype,
 )
-from torch._refs import native_layer_norm as decomp_native_layer_norm
+from torch._refs import (
+    native_layer_norm as decomp_native_layer_norm,
+    std as decomp_std,
+    std_mean as decomp_std_mean,
+)
 from torch.fx.experimental.symbolic_shapes import (
     guard_or_false,
     statically_known_true,
@@ -150,6 +154,9 @@ decomps_to_exclude: list[torch._ops.OpOverload | torch._ops.OpOverloadPacket] = 
     aten.lerp,
     aten.lerp_,
     aten.special_log_ndtr,  # inductor re-registers with copysign wrapper (#187336)
+    # inductor re-registers to accumulate in float64 on CPU like eager (#197089)
+    aten.std.correction,
+    aten.std_mean.correction,
 ]
 
 remove_decompositions(decompositions, decomps_to_exclude)
@@ -323,6 +330,46 @@ def _native_layer_norm(
         return NotImplemented
     # We can write a util function to update decomp table if we have more ops to fallback.
     return decomp_native_layer_norm(input, normalized_shape, weight, bias, eps)
+
+
+def _use_cpu_double_variance(x: torch.Tensor) -> bool:
+    # Eager CPU std/var kernels accumulate float32 in double and take the
+    # square root before rounding to float32. The reference decompositions
+    # compute var in float32 and then sqrt, so the intermediate variance
+    # overflows (|x| >~ 1e19) or underflows (|x| <~ 1e-19) even when the std
+    # itself is representable (#197089). float16/bfloat16 inputs keep their
+    # float32 accumulation, see _variance_computation_dtype in lowering.py.
+    return x.device.type == "cpu" and x.dtype == torch.float32
+
+
+@register_decomposition([aten.std.correction])
+def std(
+    x: torch.Tensor,
+    dim: list[int] | None = None,
+    *,
+    correction: float | None = None,
+    keepdim: bool = False,
+) -> torch.Tensor:
+    if not _use_cpu_double_variance(x):
+        return decomp_std(x, dim, correction=correction, keepdim=keepdim)
+    var = torch.var(x.to(torch.float64), dim, correction=correction, keepdim=keepdim)
+    return torch.sqrt(var).to(x.dtype)
+
+
+@register_decomposition([aten.std_mean.correction])
+def std_mean(
+    x: torch.Tensor,
+    dim: list[int] | None = None,
+    *,
+    correction: float | None = None,
+    keepdim: bool = False,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    if not _use_cpu_double_variance(x):
+        return decomp_std_mean(x, dim, correction=correction, keepdim=keepdim)
+    var, mean = torch.var_mean(
+        x.to(torch.float64), dim, correction=correction, keepdim=keepdim
+    )
+    return torch.sqrt(var).to(x.dtype), mean.to(x.dtype)
 
 
 @register_decomposition([aten.sym_constrain_range_for_size.default])

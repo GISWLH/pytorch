@@ -3677,6 +3677,110 @@ class CPUReproTests(TestCase):
                     torch.allclose(output_eager, output_compiled, atol=1e-4, rtol=1e-4)
                 )
 
+    @parametrize("scale", (1e30, 1e-30))
+    def test_var_std_extreme_magnitude(self, scale):
+        # https://github.com/pytorch/pytorch/issues/197089
+        # Eager CPU accumulates var/std in double, so the variance of float32
+        # inputs near 1e30 (or 1e-30) does not overflow (or underflow) before
+        # the square root. Inductor must match.
+        def fn(x):
+            return (
+                torch.std(x),
+                torch.std(x, -1, correction=0),
+                torch.std(x, [0, 1], keepdim=True),
+                *torch.std_mean(x),
+                *torch.std_mean(x, 1, correction=0, keepdim=True),
+                torch.var(x, -1),
+                *torch.var_mean(x, [0, 2], correction=2),
+            )
+
+        torch.manual_seed(0)
+        # (4, 8, 5) takes the two-step path, (4, 8, 2050) the Welford path
+        for shape in ((2, 3, 5), (4, 8, 5), (4, 8, 2050)):
+            x = torch.randn(shape) * scale
+            expected = fn(x)
+            torch._dynamo.reset()
+            actual = torch.compile(fn, backend="inductor")(x)
+            # every std output is finite and nonzero in eager
+            for i in (0, 1, 2, 3, 5):
+                self.assertTrue((torch.isfinite(expected[i]) & (expected[i] > 0)).all())
+            self.assertEqual(expected, actual, atol=0, rtol=1e-5)
+
+    def test_std_extreme_magnitude_backward(self):
+        # https://github.com/pytorch/pytorch/issues/197089
+        def fn(x):
+            return torch.std(x, correction=0)
+
+        torch.manual_seed(0)
+        for scale in (1e30, 1e-30):
+            x = torch.randn(5) * scale
+            x_ref = x.clone().requires_grad_()
+            x_cmp = x.clone().requires_grad_()
+            expected = fn(x_ref)
+            (expected_grad,) = torch.autograd.grad(expected, x_ref)
+            torch._dynamo.reset()
+            actual = torch.compile(fn, backend="inductor")(x_cmp)
+            (actual_grad,) = torch.autograd.grad(actual, x_cmp)
+            self.assertEqual(expected, actual, atol=0, rtol=1e-5)
+            self.assertEqual(expected_grad, actual_grad, atol=0, rtol=1e-5)
+            self.assertGreater(actual_grad.abs().max().item(), 0.01)
+
+    def test_var_large_mean_precision(self):
+        # https://github.com/pytorch/pytorch/issues/197089
+        # Float32 accumulation of N(1e5, 1) data loses ~3 significant digits.
+        def fn(x):
+            return x.var(-1), *torch.var_mean(x, -1), x.std(-1, correction=0)
+
+        torch.manual_seed(0)
+        x = torch.randn(4, 100003) + 1e5
+        expected = fn(x)
+        actual = torch.compile(fn, backend="inductor")(x)
+        self.assertEqual(expected, actual, atol=0, rtol=1e-5)
+        ref = x.double().var(-1)
+        self.assertLess(((actual[0].double() - ref).abs() / ref).max().item(), 1e-6)
+
+    @requires_vectorization
+    @parametrize("dtype", (torch.float16, torch.bfloat16))
+    def test_var_double_accumulation_lowp_input(self, dtype):
+        # A double Welford accumulator fed by low-precision loads needs more
+        # than two vectors per tile (VectorizedN<double, 4> with AVX2/AVX512).
+        def fn(x):
+            return (
+                torch.var(x.float(), -1),
+                *torch.var_mean(x.float()),
+                torch.var(x.double(), -1),
+            )
+
+        torch.manual_seed(0)
+        x = torch.randn(4, 8, 2050).to(dtype)
+        expected = fn(x)
+        actual, code = run_and_get_cpp_code(torch.compile(fn, backend="inductor"), x)
+        self.assertEqual(expected, actual)
+        FileCheck().check("welford_vec_reduce_all").run(code)
+
+    def test_norm_var_mean_keeps_float_accumulation(self):
+        # Only user-facing var/std ops follow the eager CPU double accumulation
+        # (#197089). var_mean nodes from decomposed normalizations do not.
+        def fn(x, w, b):
+            return F.layer_norm(x, (64,), w, b), F.group_norm(x, 4)
+
+        x = torch.randn(8, 16, 64)
+        w = torch.randn(64)
+        b = torch.randn(64)
+        expected = fn(x, w, b)
+        actual, code = run_and_get_cpp_code(
+            torch.compile(fn, backend="inductor"), x, w, b
+        )
+        self.assertEqual(expected, actual)
+        FileCheck().check_not("double").run(code)
+
+        # while a user-facing var_mean on the same input accumulates in double
+        torch._dynamo.reset()
+        _, code = run_and_get_cpp_code(
+            torch.compile(lambda x: torch.var_mean(x, -1), backend="inductor"), x
+        )
+        FileCheck().check("double").run(code)
+
     @unittest.skipIf(IS_FBCODE, "Not yet runnable in fbcode")
     @requires_vectorization
     @patch("torch.cuda.is_available", lambda: False)

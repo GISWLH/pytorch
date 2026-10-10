@@ -7648,9 +7648,37 @@ def var_mean_welford_(x, axis, *, correction, keepdim, return_mean):
     return (var,)
 
 
+# Eager CPU std/var kernels (std_var_kernel_impl and std_var_all_cpu) accumulate
+# floating inputs in double and only round the final result. Accumulating
+# float32 inputs in float32 instead overflows to inf/nan for inputs near 1e20
+# and above, underflows the squared deviations to 0 below ~1e-20, and loses
+# digits when the mean is large relative to the spread (#197089).
+_CPU_DOUBLE_VARIANCE_OPS = OrderedSet([aten.var, aten.var_mean])
+
+
+def _variance_computation_dtype(x, out_dtype):
+    compute_dtype = get_computation_dtype(out_dtype)
+    device = x.get_device()
+    # float16/bfloat16 inputs keep their float32 accumulation.
+    if device is None or device.type != "cpu" or out_dtype != torch.float32:
+        return compute_dtype
+    # Only user-facing var/std ops follow the eager CPU double accumulation.
+    # var_mean nodes produced by decomposing normalization ops (layer_norm,
+    # group_norm, batch_norm) keep their current precision, since their eager
+    # CPU kernels have their own accumulation types.
+    node = getattr(V.graph, "current_node", None) if V.graph is not None else None
+    original_aten = node.meta.get("original_aten") if node is not None else None
+    if (
+        isinstance(original_aten, torch._ops.OpOverload)
+        and original_aten.overloadpacket in _CPU_DOUBLE_VARIANCE_OPS
+    ):
+        return torch.float64
+    return compute_dtype
+
+
 def var_mean_helper_(x, *, axis, correction, keepdim, return_mean):
     out_dtype = x.get_dtype()
-    compute_dtype = get_computation_dtype(out_dtype)
+    compute_dtype = _variance_computation_dtype(x, out_dtype)
     x = to_dtype(x, compute_dtype, copy=False)
     kwargs = dict(
         x=x,

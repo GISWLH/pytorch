@@ -3439,13 +3439,6 @@ class CppVecKernel(CppKernel):
         if horizontal_reduction:
             # Horizontal reduction
             if is_welford_reduction(reduction_type):
-                if self._get_num_vectors(dtype) not in [
-                    1,
-                    2,
-                ]:
-                    raise AssertionError(
-                        "Welford reduction does not support VectorizedN (N>2)"
-                    )
                 next_value = f"welford_vec_reduce_all({acc_vec})"
                 masked_next_value = f"welford_vec_reduce_all({masked_acc_vec})"
                 self.reduction_suffix.writeline(

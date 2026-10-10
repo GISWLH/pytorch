@@ -821,14 +821,20 @@ Welford<scalar_t> welford_vec_reduce_all(
   return result;
 }
 
-template <typename scalar_t>
+template <typename scalar_t, int N>
 Welford<scalar_t> welford_vec_reduce_all(
-    Welford<at::vec::VectorizedN<scalar_t, 2>> acc) {
-  auto Welford0 = Welford<at::vec::Vectorized<scalar_t>>{
+    Welford<at::vec::VectorizedN<scalar_t, N>> acc) {
+  // N > 2 happens e.g. for a double accumulator fed by bf16/fp16 loads, where
+  // the tiling factor is chosen for the low-precision type.
+  auto result = Welford<at::vec::Vectorized<scalar_t>>{
       acc.mean[0], acc.m2[0], acc.weight[0], acc.index};
-  auto Welford1 = Welford<at::vec::Vectorized<scalar_t>>{
-      acc.mean[1], acc.m2[1], acc.weight[1], acc.index};
-  return welford_vec_reduce_all(welford_combine(Welford0, Welford1));
+  for (int i = 1; i < N; i++) {
+    result = welford_combine(
+        result,
+        Welford<at::vec::Vectorized<scalar_t>>{
+            acc.mean[i], acc.m2[i], acc.weight[i], acc.index});
+  }
+  return welford_vec_reduce_all(result);
 }
 #endif
 

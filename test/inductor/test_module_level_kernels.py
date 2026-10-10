@@ -14,7 +14,7 @@ import torch
 from torch._dynamo.utils import counters
 from torch._higher_order_ops.associative_scan import associative_scan
 from torch._higher_order_ops.inline_asm_elementwise import inline_asm_elementwise
-from torch._inductor import CompiledArtifact, config
+from torch._inductor import CompiledArtifact, config, load_from_python
 from torch._inductor.async_compile import AsyncCompile
 from torch._inductor.codecache import PyCodeCache
 from torch._inductor.codegen.wrapper import PythonWrapperCodegen
@@ -501,6 +501,24 @@ class TestModuleLevelKernels(TestCase):
         y = torch.randint(-8, 8, (256,), device="cuda", dtype=torch.int32)
         result, _ = _code_for(fn, x, y)
         self.assertEqual(result, (x >= y).int())
+
+    @requires_cuda_and_triton
+    def test_load_from_python(self):
+        # It loads source it is handed, and a module-level kernel needs it in a file.
+        x = torch.randn(64, 128, device="cuda")
+        result, code = _code_for(_softmax, x)
+        self.assertEqual(load_from_python(code)([x])[0], result)
+
+    @requires_cuda_and_triton
+    def test_load_from_python_after_a_whitespace_only_edit(self):
+        # Both texts strip to the same thing, which PyCodeCache.write keys its path on.
+        # Shifted past the end of the unshifted file, the kernel's def lines are only
+        # found in a file that holds the shifted text.
+        x = torch.randn(64, 128, device="cuda")
+        result, code = _code_for(_softmax, x)
+        self.assertEqual(load_from_python(code)([x])[0], result)
+        shifted = "\n" * code.count("\n") + code
+        self.assertEqual(load_from_python(shifted)([x])[0], result)
 
 
 class TestDefaultWrapper(TestCase):

@@ -1,3 +1,7 @@
+<!-- readme-visual-refresh:banner -->
+![pytorch — hand-drawn project banner](assets/readme/banner.svg)
+<!-- /readme-visual-refresh:banner -->
+
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="https://github.com/pytorch/pytorch/raw/main/docs/source/_static/img/pytorch-logo-light.png" />
   <source media="(prefers-color-scheme: light)" srcset="https://github.com/pytorch/pytorch/raw/main/docs/source/_static/img/pytorch-logo-dark.png" />
@@ -483,3 +487,18 @@ Note: This project is unrelated to [hughperkins/pytorch](https://github.com/hugh
 ## License
 
 PyTorch has a BSD-style license, as found in the [LICENSE](LICENSE) file.
+
+<!-- readme-visual-refresh:artwork-source -->
+[Editable banner artwork · Excalidraw](assets/readme/banner.excalidraw)
+<!-- /readme-visual-refresh:artwork-source -->
+
+
+<!-- readme-visual-refresh:selected-result -->
+
+## 已有结果展示
+
+![上游 inference benchmark 保存的吞吐量曲线，比较批大小与 worker 数；数据属于原基准环境。](assets/readme/result.png)
+
+上游 inference benchmark 保存的吞吐量曲线，比较批大小与 worker 数；数据属于原基准环境。 该图为仓库已有上游示例，保留原有来源；本次仅整理展示，未重新运行。 [查看来源](https://github.com/GISWLH/pytorch/blob/main/benchmarks/inference/src/throughput_plot.png)。
+
+<!-- /readme-visual-refresh:selected-result -->
